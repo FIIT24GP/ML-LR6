@@ -50,7 +50,58 @@ def find_best_split(feature_vector, target_vector):
     """
     # ╰( ͡☉ ͜ʖ ͡☉ )つ──☆*:・ﾟ   ฅ^•ﻌ•^ฅ   ʕ•ᴥ•ʔ
 
-    pass
+    # Сортируем вектор признаков и получаем индексы сортировки
+    sorted_ind = np.argsort(feature_vector)
+    # Сортируем сам вектор признаков по индексам
+    feat_sort = feature_vector[sorted_ind]
+    # Сортируем целевой вектор по тем же индексам
+    target_sort = target_vector[sorted_ind]
+
+    # Создаем маску для значений, которые отличаются от предыдущего (для определения порогов раздела)
+    mask = feat_sort[1:] != feat_sort[:-1]
+
+    # Рассчитываем возможные пороги для раздела (среднее значение между соседними элементами)
+    threshold_vec = ((feat_sort[1:] + feat_sort[:-1]) / 2)[mask]
+
+    # Общее количество элементов в целевом векторе
+    AllSize = np.size(target_sort)
+
+    # Создаем массив для размера левой части (количество элементов слева от порога)
+    R_left_size = np.arange(1, AllSize)
+
+    # Накопленная сумма по целевому вектору для левой части
+    R_left_1 = np.cumsum(target_sort)
+
+    # Вероятность класса 1 для левой части, считаем по накопленной сумме и размеру
+    R_left_p1 = R_left_1[:-1] / R_left_size
+    # Вероятность класса 0 для левой части
+    R_left_p0 = 1 - R_left_p1
+
+    # Накопленная сумма по правой части (правая часть = общий минус левая)
+    R_right_1 = R_left_1[-1] - R_left_1[:-1]
+
+    # Вероятность класса 1 для правой части
+    R_right_p1 = R_right_1 / (AllSize - R_left_size)
+    # Вероятность класса 0 для правой части
+    R_right_p0 = 1 - R_right_p1
+
+    # Вычисление индекса Джини для каждого возможного порога
+    gini_vec = R_left_size / AllSize * (R_left_p0 ** 2 + R_left_p1 ** 2 - 1) + \
+        (AllSize - R_left_size) / AllSize * (R_right_p0 ** 2 + R_right_p1 ** 2 - 1)
+
+    # Фильтрация значений индекса Джини для корректных порогов (без одинаковых значений в feature_vector)
+    gini_vec = gini_vec[mask]
+
+    # Находим индекс порога с минимальным значением индекса Джини (наилучший порог)
+    ind_best = np.argmax(gini_vec)
+    # Находим сам лучший порог
+    threshold_best = threshold_vec[ind_best]
+    # Получаем индекс Джини для наилучшего порога
+    gini_best = gini_vec[ind_best]
+
+    # Возвращаем пороги, индексы Джини и лучший порог с его значением индекса Джини
+    return threshold_vec, gini_vec, threshold_best, gini_best
+
 
 
 class DecisionTree:
@@ -72,51 +123,60 @@ class DecisionTree:
 
     def _fit_node(self, sub_X, sub_y, node):
         """
-        Обучение узла дерева решений.
+        Рекурсивное предсказание класса для одного объекта по узлу дерева решений.
 
-        Если все элементы в подвыборке принадлежат одному классу, узел становится терминальным.
+        Если узел терминальный, возвращается предсказанный класс.
+        Если узел не терминальный, выборка передается в соответствующее поддерево для дальнейшего предсказания.
 
         Parameters
         ----------
-        sub_X : np.ndarray
-            Подвыборка признаков.
-        sub_y : np.ndarray
-            Подвыборка меток классов.
+        x : np.ndarray
+            Вектор признаков одного объекта.
         node : dict
-            Узел дерева, который будет заполнен информацией о разбиении.
+            Узел дерева решений.
 
+        Returns
+        -------
+        int
+            Предсказанный класс объекта.
         """
+
         if np.all(sub_y == sub_y[0]):
             node["type"] = "terminal"
             node["class"] = sub_y[0]
             return
 
         feature_best, threshold_best, gini_best, split = None, None, None, None
-
         for feature in range(sub_X.shape[1]):
             feature_type = self._feature_types[feature]
+            categories_map = {}
 
             if feature_type == "real":
                 feature_vector = sub_X[:, feature]
             elif feature_type == "categorical":
                 counts = Counter(sub_X[:, feature])
                 clicks = Counter(sub_X[sub_y == 1, feature])
-                ratio = {
-                    key: clicks.get(key, 0) / count for key, count in counts.items()
-                }
-                sorted_categories = sorted(ratio, key=ratio.get)
-                categories_map = {
-                    category: i for i, category in enumerate(sorted_categories)
-                }
-                feature_vector = np.vectorize(categories_map.get)(sub_X[:, feature])
-            else:
-                raise ValueError("Некорректный тип признака")
+                ratio = {}
+                for key, current_count in counts.items():  # key - категория
+                    if key in clicks:
+                        current_click = clicks[key]
+                    else:
+                        current_click = 0
+                    ratio[key] = current_click / current_count  # по ключу лежит доля y=1 в категории
+                sorted_categories = sorted(ratio.keys(),
+                                           key=lambda k: ratio[k])  # отсортировали категории по доле единиц
+                categories_map = dict(zip(sorted_categories,
+                                          range(len(sorted_categories))))  # по названию категории получаем ее порядковый номер
 
-            if len(np.unique(feature_vector)) <= 1:
+                feature_vector = np.array([
+                        categories_map[x] for x in sub_X[:, feature]])  # получили вектор порядковых номеров
+            else:
+                raise ValueError
+
+            if np.all(feature_vector == feature_vector[0]):  # не получается разбить
                 continue
 
             _, _, threshold, gini = find_best_split(feature_vector, sub_y)
-
             if gini_best is None or gini > gini_best:
                 feature_best = feature
                 gini_best = gini
@@ -125,29 +185,34 @@ class DecisionTree:
                 if feature_type == "real":
                     threshold_best = threshold
                 elif feature_type == "categorical":
-                    threshold_best = [
-                        k for k, v in categories_map.items() if v < threshold
-                    ]
+                    threshold_best = list(  # список подходящих категорий
+                            map(lambda x: x[0], # берем первый элемент, то есть ключ - исходную категорию
+                                filter(
+                                        lambda x: x[1] < threshold,
+                                        categories_map.items())))
+                else:
+                    raise ValueError
 
         if feature_best is None:
             node["type"] = "terminal"
-            node["class"] = Counter(sub_y).most_common(1)[0][0]
+            node["class"] = Counter(sub_y).most_common(1)
             return
 
         node["type"] = "nonterminal"
-        node["feature_split"] = feature_best
 
+        node["feature_split"] = feature_best
         if self._feature_types[feature_best] == "real":
             node["threshold"] = threshold_best
         elif self._feature_types[feature_best] == "categorical":
             node["categories_split"] = threshold_best
         else:
-            raise ValueError("Некорректный тип признака")
-
+            raise ValueError
         node["left_child"], node["right_child"] = {}, {}
+        self.depth += 1
         self._fit_node(sub_X[split], sub_y[split], node["left_child"])
-        self._fit_node(sub_X[~split], sub_y[~split], node["right_child"])
-
+        self._fit_node(
+                sub_X[np.logical_not(split)],
+                sub_y[np.logical_not(split)], node["right_child"])
     def _predict_node(self, x, node):
         """
         Рекурсивное предсказание класса для одного объекта по узлу дерева решений.
@@ -168,9 +233,24 @@ class DecisionTree:
             Предсказанный класс объекта.
         """
         # ╰( ͡☉ ͜ʖ ͡☉ )つ──☆*:・ﾟ   ฅ^•ﻌ•^ฅ   ʕ•ᴥ•ʔ
-        pass
+    
+        if(node['type'] == 'terminal'):
+            return node['class']
+        else:
+            feature_type = self._feature_types[node['feature_split']]
+            if(feature_type == 'real'):
+                if(x[node['feature_split']] < node['threshold']):
+                    return self._predict_node(x, node['left_child'])
+                else:
+                    return self._predict_node(x, node['right_child'])
+            else:
+                if(x[node['feature_split']] in node['categories_split']):
+                    return self._predict_node(x, node['left_child'])
+                else:
+                    return self._predict_node(x, node['right_child'])
 
     def fit(self, X, y):
+        self.depth = 1
         self._fit_node(X, y, self._tree)
 
     def predict(self, X):
@@ -178,3 +258,6 @@ class DecisionTree:
         for x in X:
             predicted.append(self._predict_node(x, self._tree))
         return np.array(predicted)
+
+
+
